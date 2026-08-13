@@ -373,7 +373,9 @@ func addOne(c *ghapi.Client, inst, repoArg, pathOverride string) error {
 			return err
 		}
 
-		snippet = instance.EmbedSnippet(r, *entry)
+		// Save sorts the entries slice, so re-resolve by ID rather than
+		// trusting a pre-sort pointer.
+		snippet = instance.EmbedSnippet(r, *m.FindByID(meta.ID))
 
 		_, err = r.CommitPush(fmt.Sprintf("chore: add star chart for %s", meta.FullName), ".")
 
