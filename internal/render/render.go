@@ -111,7 +111,7 @@ func SVG(d *chartdata.Data, th Theme) string {
 		x1 = x0 + 1
 	}
 
-	yMax := niceCeil(maxStars(pts))
+	yMax, ySegments := niceCeil(maxStars(pts))
 
 	xOf := func(day int) float64 {
 		return marginL + float64(day-x0)/float64(x1-x0)*(width-marginL-marginR)
@@ -121,8 +121,8 @@ func SVG(d *chartdata.Data, th Theme) string {
 	}
 
 	// Recessive horizontal gridlines with y labels.
-	for _, frac := range []float64{0, 0.25, 0.5, 0.75, 1} {
-		v := int(math.Round(frac * float64(yMax)))
+	for s := 0; s <= ySegments; s++ {
+		v := yMax / ySegments * s
 		y := yOf(v)
 
 		fmt.Fprintf(&b, `<line x1="%d" y1="%.1f" x2="%d" y2="%.1f" stroke="%s" stroke-width="1"/>`+"\n", marginL, y, width-marginR, y, th.Grid)
@@ -183,20 +183,24 @@ func maxStars(pts []chartdata.Point) int {
 	return m
 }
 
-// niceCeil rounds up to a pleasant axis maximum: 1/2/2.5/5 times a power of ten.
-func niceCeil(v int) int {
+// niceCeil rounds up to a pleasant axis maximum (1/2/2.5/5 times a power of
+// ten) and picks a segment count that keeps every gridline label round.
+func niceCeil(v int) (int, int) {
 	if v <= 4 {
-		return 4
+		return 4, 4
 	}
 
 	mag := math.Pow(10, math.Floor(math.Log10(float64(v))))
-	for _, m := range []float64{1, 2, 2.5, 5, 10} {
-		if c := m * mag; float64(v) <= c {
-			return int(c)
+	for _, m := range []struct {
+		mult     float64
+		segments int
+	}{{1, 4}, {2, 4}, {2.5, 5}, {5, 5}, {10, 4}} {
+		if c := m.mult * mag; float64(v) <= c {
+			return int(c), m.segments
 		}
 	}
 
-	return int(10 * mag)
+	return int(10 * mag), 4
 }
 
 func group(n int) string {
