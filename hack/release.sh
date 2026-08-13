@@ -47,4 +47,4 @@ git tag "${version}"
 git push origin "${version}"
 
 gh release create "${version}" "${out}"/gh-star-charts_* "${out}/checksums.txt" \
-	--title "${version}" --notes-from-tag --generate-notes
+	--title "${version}" --generate-notes
