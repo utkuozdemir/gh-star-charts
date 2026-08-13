@@ -34,6 +34,16 @@ This creates `<your-login>/star-charts`, backfills each repo, and prints a copy-
 
 Other verbs: `add` tracks more repos, `remove` pauses a chart (its URLs keep serving the last state; `--purge` deletes), `reset` destructively rebuilds history, `update` is the workflow's entry point.
 
+### Styling, per chart
+
+The defaults (blue line, transparent background, light and dark variants) are contrast-validated against GitHub's README surfaces. To restyle a chart, pass style flags to `add`, re-running it on an already-tracked repo just applies the changes:
+
+```sh
+gh star-charts add owner/repo --line-color '#e86161' --background '#fffdf5' --background-dark '#161b22'
+```
+
+A value applies to both modes unless its `-dark` variant is set; `none` clears an override. Style is stored per chart in the instance manifest, so the daily updates keep rendering it.
+
 ## How it works, and the trust story
 
 Reading star history timestamps now requires write access on a repo, so the backfill happens once, locally, as you. Afterwards the current star count is public data: the instance repo's workflow polls it daily, appends to a committed `data.json`, re-renders the SVGs, and pushes to itself with an explicit `contents: write` permission block and nothing else.

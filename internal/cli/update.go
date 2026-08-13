@@ -158,7 +158,7 @@ func refreshOne(c *ghapi.Client, r *instance.Repo, e *manifest.Entry) error {
 	d.Repo = meta.FullName
 	d.Observe(time.Now().UTC(), meta.StargazersCount)
 
-	return writeChart(r.Dir, e.Path, d)
+	return writeChart(r.Dir, e.Path, d, e.Style)
 }
 
 // maybeNoteNewerRelease surfaces available upgrades: notification, never

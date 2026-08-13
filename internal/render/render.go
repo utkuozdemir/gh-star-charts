@@ -27,6 +27,23 @@ type Theme struct {
 	Muted     string
 	Grid      string
 	Axis      string
+	// Background paints an explicit chart background; empty stays
+	// transparent so the chart blends into the page.
+	Background string
+}
+
+// WithOverrides returns a copy of the theme with per-chart style applied.
+// Empty overrides keep the defaults.
+func (t Theme) WithOverrides(line, background string) Theme {
+	if line != "" {
+		t.Line = line
+	}
+
+	if background != "" {
+		t.Background = background
+	}
+
+	return t
 }
 
 // Light and Dark are the two shipped themes.
@@ -67,6 +84,10 @@ func SVG(d *chartdata.Data, th Theme) string {
 	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d" role="img" aria-label="Star history of %s">`+"\n",
 		width, height, width, height, esc(d.Repo))
 	b.WriteString(`<style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}</style>` + "\n")
+
+	if th.Background != "" {
+		fmt.Fprintf(&b, `<rect x="0" y="0" width="%d" height="%d" rx="6" fill="%s"/>`+"\n", width, height, th.Background)
+	}
 
 	// Title and current count, ink colors only.
 	fmt.Fprintf(&b, `<text x="%d" y="28" font-size="15" font-weight="600" fill="%s">%s</text>`+"\n", marginL, th.Primary, esc(d.Repo))

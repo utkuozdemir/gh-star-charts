@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -194,7 +195,7 @@ func cmdInit(args []string) error {
 	fmt.Println("upgrades: gh extension upgrade star-charts && gh star-charts init")
 
 	if fs.NArg() > 0 {
-		return addRepos(c, inst, fs.Args(), "")
+		return addRepos(c, inst, fs.Args(), "", manifest.Style{})
 	}
 
 	return nil
@@ -243,6 +244,13 @@ func cmdAdd(args []string) error {
 	chartsRepo := fs.String("charts-repo", "", "instance repo, default <login>/star-charts")
 	chartPath := fs.String("chart-path", "", "override the chart directory (only for path collisions)")
 
+	var style manifest.Style
+
+	fs.StringVar(&style.LineColor, "line-color", "", "per-chart line color (both modes unless -line-color-dark is set); \"none\" clears")
+	fs.StringVar(&style.LineColorDark, "line-color-dark", "", "line color for the dark chart")
+	fs.StringVar(&style.Background, "background", "", "explicit chart background (default transparent); \"none\" clears")
+	fs.StringVar(&style.BackgroundDark, "background-dark", "", "background for the dark chart")
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -269,12 +277,12 @@ func cmdAdd(args []string) error {
 		return fmt.Errorf("instance repo %s not reachable (run `gh star-charts init` first): %w", inst, err)
 	}
 
-	return addRepos(c, inst, fs.Args(), *chartPath)
+	return addRepos(c, inst, fs.Args(), *chartPath, style)
 }
 
-func addRepos(c *ghapi.Client, inst string, repos []string, pathOverride string) error {
+func addRepos(c *ghapi.Client, inst string, repos []string, pathOverride string, style manifest.Style) error {
 	for _, arg := range repos {
-		if err := addOne(c, inst, arg, pathOverride); err != nil {
+		if err := addOne(c, inst, arg, pathOverride, style); err != nil {
 			return fmt.Errorf("add %s: %w", arg, err)
 		}
 	}
@@ -282,7 +290,26 @@ func addRepos(c *ghapi.Client, inst string, repos []string, pathOverride string)
 	return nil
 }
 
-func addOne(c *ghapi.Client, inst, repoArg, pathOverride string) error {
+// applyStyle merges add-time style flags onto an entry: empty flags keep the
+// stored style, the sentinel "none" clears a field.
+func applyStyle(entry *manifest.Entry, flags manifest.Style) {
+	apply := func(dst *string, v string) {
+		switch v {
+		case "":
+		case "none":
+			*dst = ""
+		default:
+			*dst = v
+		}
+	}
+
+	apply(&entry.Style.LineColor, flags.LineColor)
+	apply(&entry.Style.LineColorDark, flags.LineColorDark)
+	apply(&entry.Style.Background, flags.Background)
+	apply(&entry.Style.BackgroundDark, flags.BackgroundDark)
+}
+
+func addOne(c *ghapi.Client, inst, repoArg, pathOverride string, style manifest.Style) error {
 	meta, err := c.GetRepo(repoArg)
 	if err != nil {
 		return describeAccessError(err)
@@ -327,6 +354,12 @@ func addOne(c *ghapi.Client, inst, repoArg, pathOverride string) error {
 			entry.Note = ""
 		}
 
+		applyStyle(entry, style)
+
+		if err := validStyle(entry.Style); err != nil {
+			return err
+		}
+
 		dataPath := filepath.Join(r.Dir, entry.Path, "data.json")
 
 		d, err := chartdata.Load(dataPath)
@@ -361,7 +394,7 @@ func addOne(c *ghapi.Client, inst, repoArg, pathOverride string) error {
 		// Always land an authoritative current-count observation.
 		d.Observe(time.Now().UTC(), meta.StargazersCount)
 
-		if err := writeChart(r.Dir, entry.Path, d); err != nil {
+		if err := writeChart(r.Dir, entry.Path, d, entry.Style); err != nil {
 			return err
 		}
 
@@ -410,14 +443,47 @@ func describeAccessError(err error) error {
 	}
 }
 
-func writeChart(root, chartPath string, d *chartdata.Data) error {
+// colorRe loosely accepts CSS color values while keeping SVG attribute
+// injection impossible.
+var colorRe = regexp.MustCompile(`^[-#a-zA-Z0-9(),.% ]+$`)
+
+func validStyle(s manifest.Style) error {
+	for _, v := range []string{s.LineColor, s.LineColorDark, s.Background, s.BackgroundDark} {
+		if v != "" && !colorRe.MatchString(v) {
+			return fmt.Errorf("invalid color value %q", v)
+		}
+	}
+
+	return nil
+}
+
+// themesFor applies per-chart style on top of the validated defaults. A
+// single value covers both modes unless its dark variant is set.
+func themesFor(s manifest.Style) []render.Theme {
+	darkLine := s.LineColorDark
+	if darkLine == "" {
+		darkLine = s.LineColor
+	}
+
+	darkBg := s.BackgroundDark
+	if darkBg == "" {
+		darkBg = s.Background
+	}
+
+	return []render.Theme{
+		render.Light.WithOverrides(s.LineColor, s.Background),
+		render.Dark.WithOverrides(darkLine, darkBg),
+	}
+}
+
+func writeChart(root, chartPath string, d *chartdata.Data, style manifest.Style) error {
 	dir := filepath.Join(root, chartPath)
 
 	if err := d.Save(filepath.Join(dir, "data.json")); err != nil {
 		return err
 	}
 
-	for _, th := range []render.Theme{render.Light, render.Dark} {
+	for _, th := range themesFor(style) {
 		tmp, err := os.CreateTemp(dir, ".svg-*")
 		if err != nil {
 			return err
@@ -603,7 +669,7 @@ func cmdReset(args []string) error {
 
 		d.Observe(time.Now().UTC(), meta.StargazersCount)
 
-		if err := writeChart(r.Dir, entry.Path, d); err != nil {
+		if err := writeChart(r.Dir, entry.Path, d, entry.Style); err != nil {
 			return err
 		}
 

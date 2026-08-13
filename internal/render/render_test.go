@@ -142,3 +142,24 @@ func TestGoldenSmoke(t *testing.T) {
 		}
 	}
 }
+
+func TestStyleOverrides(t *testing.T) {
+	d := data([]chartdata.Point{
+		{Date: "2021-01-01", Stars: 1}, {Date: "2026-08-13", Stars: 100},
+	}, "2026-08-13")
+
+	th := render.Light.WithOverrides("#e86161", "#fffdf5")
+	svg := render.SVG(d, th)
+
+	if !strings.Contains(svg, `stroke="#e86161"`) {
+		t.Error("line color override not applied")
+	}
+
+	if !strings.Contains(svg, `fill="#fffdf5"`) {
+		t.Error("background override not applied")
+	}
+
+	if strings.Contains(render.SVG(d, render.Light), "<rect") {
+		t.Error("default chart must stay transparent")
+	}
+}

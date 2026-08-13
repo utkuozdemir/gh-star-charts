@@ -40,6 +40,23 @@ type Entry struct {
 	ConsecutiveFailures int `yaml:"consecutiveFailures,omitempty"`
 	// Note documents why an entry was auto-paused.
 	Note string `yaml:"note,omitempty"`
+	// Style holds per-chart appearance overrides.
+	Style Style `yaml:"style,omitempty"`
+}
+
+// Style are optional per-chart appearance overrides; empty fields keep the
+// validated defaults. A single value applies to both modes unless the dark
+// variant is set.
+type Style struct {
+	LineColor      string `yaml:"lineColor,omitempty"`
+	LineColorDark  string `yaml:"lineColorDark,omitempty"`
+	Background     string `yaml:"background,omitempty"`
+	BackgroundDark string `yaml:"backgroundDark,omitempty"`
+}
+
+// IsZero reports whether no override is set (also used by yaml omitempty).
+func (s Style) IsZero() bool {
+	return s == Style{}
 }
 
 // Manifest is the file's root.
