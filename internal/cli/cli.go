@@ -204,7 +204,7 @@ func cmdInit(args []string) error {
 	fmt.Println("upgrades: gh extension upgrade star-charts && gh star-charts init")
 
 	if fs.NArg() > 0 {
-		return addRepos(c, inst, fs.Args(), "", manifest.Style{})
+		return addRepos(c, inst, fs.Args(), "", manifest.Style{}, "")
 	}
 
 	return nil
@@ -260,6 +260,8 @@ func cmdAdd(args []string) error {
 	fs.StringVar(&style.Background, "background", "", "explicit chart background (default transparent); \"none\" clears")
 	fs.StringVar(&style.BackgroundDark, "background-dark", "", "background for the dark chart")
 
+	look := fs.String("look", "", "chart style: sketchy (the classic hand-drawn default) or clean")
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -286,12 +288,12 @@ func cmdAdd(args []string) error {
 		return fmt.Errorf("instance repo %s not reachable (run `gh star-charts init` first): %w", inst, err)
 	}
 
-	return addRepos(c, inst, fs.Args(), *chartPath, style)
+	return addRepos(c, inst, fs.Args(), *chartPath, style, *look)
 }
 
-func addRepos(c *ghapi.Client, inst string, repos []string, pathOverride string, style manifest.Style) error {
+func addRepos(c *ghapi.Client, inst string, repos []string, pathOverride string, style manifest.Style, look string) error {
 	for _, arg := range repos {
-		if err := addOne(c, inst, arg, pathOverride, style); err != nil {
+		if err := addOne(c, inst, arg, pathOverride, style, look); err != nil {
 			return fmt.Errorf("add %s: %w", arg, err)
 		}
 	}
@@ -318,7 +320,7 @@ func applyStyle(entry *manifest.Entry, flags manifest.Style) {
 	apply(&entry.Style.BackgroundDark, flags.BackgroundDark)
 }
 
-func addOne(c *ghapi.Client, inst, repoArg, pathOverride string, style manifest.Style) error {
+func addOne(c *ghapi.Client, inst, repoArg, pathOverride string, style manifest.Style, look string) error {
 	meta, err := c.GetRepo(repoArg)
 	if err != nil {
 		return describeAccessError(err)
@@ -364,6 +366,14 @@ func addOne(c *ghapi.Client, inst, repoArg, pathOverride string, style manifest.
 		}
 
 		applyStyle(entry, style)
+
+		switch look {
+		case "":
+		case "sketchy", "clean":
+			entry.Style.Look = look
+		default:
+			return fmt.Errorf("-look takes sketchy or clean, got %q", look)
+		}
 
 		if err := validStyle(entry.Style); err != nil {
 			return err
@@ -483,10 +493,16 @@ func themesFor(s manifest.Style) []render.Theme {
 		darkBg = s.Background
 	}
 
-	return []render.Theme{
-		render.Light.WithOverrides(s.LineColor, s.Background),
-		render.Dark.WithOverrides(darkLine, darkBg),
+	light := render.Light.WithOverrides(s.LineColor, s.Background)
+	dark := render.Dark.WithOverrides(darkLine, darkBg)
+
+	// The classic hand-drawn look is the default; "clean" opts out.
+	if s.Look != "clean" {
+		light = light.WithSketchy(render.SketchyLineLight)
+		dark = dark.WithSketchy(render.SketchyLineDark)
 	}
+
+	return []render.Theme{light, dark}
 }
 
 func writeChart(root, chartPath string, d *chartdata.Data, style manifest.Style) error {

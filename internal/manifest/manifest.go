@@ -52,6 +52,9 @@ type Style struct {
 	LineColorDark  string `yaml:"lineColorDark,omitempty"`
 	Background     string `yaml:"background,omitempty"`
 	BackgroundDark string `yaml:"backgroundDark,omitempty"`
+	// Look selects the chart style: empty or "sketchy" is the classic
+	// hand-drawn default, "clean" is the plain alternative.
+	Look string `yaml:"look,omitempty"`
 }
 
 // IsZero reports whether no override is set (also used by yaml omitempty).

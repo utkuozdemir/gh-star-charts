@@ -163,3 +163,37 @@ func TestStyleOverrides(t *testing.T) {
 		t.Error("default chart must stay transparent")
 	}
 }
+
+func TestSketchyMode(t *testing.T) {
+	d := data([]chartdata.Point{
+		{Date: "2021-01-01", Stars: 1}, {Date: "2024-01-01", Stars: 800}, {Date: "2026-08-13", Stars: 1528},
+	}, "2026-08-13")
+
+	th := render.Light.WithSketchy(render.SketchyLineLight)
+	svg := render.SVG(d, th)
+
+	if svg != render.SVG(d, th) {
+		t.Fatal("sketchy rendering must be deterministic")
+	}
+
+	if !strings.Contains(svg, render.SketchyLineLight) {
+		t.Error("sketchy default coral not applied")
+	}
+
+	if strings.Contains(svg, "<polygon") {
+		t.Error("sketchy mode must not draw the area fill")
+	}
+
+	if !strings.Contains(svg, "Comic") {
+		t.Error("sketchy mode must use the comic lettering stack")
+	}
+
+	if err := xml.Unmarshal([]byte(svg), new(any)); err != nil {
+		t.Fatalf("invalid XML: %v", err)
+	}
+
+	custom := render.Light.WithOverrides("#123456", "").WithSketchy(render.SketchyLineLight)
+	if !strings.Contains(render.SVG(d, custom), "#123456") {
+		t.Error("a custom line color must survive sketchy mode")
+	}
+}

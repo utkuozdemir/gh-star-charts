@@ -30,7 +30,17 @@ type Theme struct {
 	// Background paints an explicit chart background; empty stays
 	// transparent so the chart blends into the page.
 	Background string
+	// Sketchy renders the hand-drawn xkcd-style look: wobbly line work,
+	// dot markers, no grid, comic lettering.
+	Sketchy bool
 }
+
+// Sketchy-mode default line colors, the classic star-history coral, validated
+// against GitHub's README surfaces.
+const (
+	SketchyLineLight = "#c94f35"
+	SketchyLineDark  = "#dd6a50"
+)
 
 // WithOverrides returns a copy of the theme with per-chart style applied.
 // Empty overrides keep the defaults.
@@ -41,6 +51,17 @@ func (t Theme) WithOverrides(line, background string) Theme {
 
 	if background != "" {
 		t.Background = background
+	}
+
+	return t
+}
+
+// WithSketchy switches the theme to the hand-drawn look. Unless the chart
+// carries its own line color, the line turns the classic coral.
+func (t Theme) WithSketchy(defaultLine string) Theme {
+	t.Sketchy = true
+	if t.Line == Light.Line || t.Line == Dark.Line {
+		t.Line = defaultLine
 	}
 
 	return t
@@ -69,8 +90,13 @@ const (
 	marginB = 52
 )
 
-// SVG renders one theme of the chart.
+// SVG renders one theme of the chart. The sketchy look, the default, mimics
+// the classic star-history embed; the clean look is the opt-out alternative.
 func SVG(d *chartdata.Data, th Theme) string {
+	if th.Sketchy {
+		return sketchSVG(d, th)
+	}
+
 	pts := d.Points
 
 	// Extend the curve to lastChecked with a flat segment, so the right edge
@@ -136,6 +162,14 @@ func SVG(d *chartdata.Data, th Theme) string {
 		fmt.Fprintf(&b, `<text x="%.1f" y="%d" font-size="12" text-anchor="middle" fill="%s">%s</text>`+"\n", x, height-marginB+20, th.Muted, tick.label)
 	}
 
+	xs := make([]float64, len(pts))
+	ys := make([]float64, len(pts))
+
+	for i, p := range pts {
+		xs[i] = xOf(dayNum(p.Date))
+		ys[i] = yOf(p.Stars)
+	}
+
 	// Baseline.
 	fmt.Fprintf(&b, `<line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s" stroke-width="1"/>`+"\n",
 		marginL, height-marginB, width-marginR, height-marginB, th.Axis)
@@ -146,13 +180,13 @@ func SVG(d *chartdata.Data, th Theme) string {
 		line = append(line, fmt.Sprintf("%.1f,%.1f", xOf(dayNum(p.Date)), yOf(p.Stars)))
 	}
 
-	area := fmt.Sprintf("%.1f,%d %s %.1f,%d", xOf(dayNum(pts[0].Date)), height-marginB, strings.Join(line, " "), xOf(dayNum(pts[len(pts)-1].Date)), height-marginB)
+	area := fmt.Sprintf("%.1f,%d %s %.1f,%d", xs[0], height-marginB, strings.Join(line, " "), xs[len(xs)-1], height-marginB)
 
 	fmt.Fprintf(&b, `<polygon points="%s" fill="%s" opacity="%s"/>`+"\n", area, th.Line, th.AreaOp)
 	fmt.Fprintf(&b, `<polyline points="%s" fill="none" stroke="%s" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`+"\n", strings.Join(line, " "), th.Line)
 
 	// End-point marker.
-	fmt.Fprintf(&b, `<circle cx="%.1f" cy="%.1f" r="3.5" fill="%s"/>`+"\n", xOf(dayNum(pts[len(pts)-1].Date)), yOf(current), th.Line)
+	fmt.Fprintf(&b, `<circle cx="%.1f" cy="%.1f" r="3.5" fill="%s"/>`+"\n", xs[len(xs)-1], yOf(current), th.Line)
 
 	// Captions: truncation notice left, freshness right.
 	if d.PrefixTruncated {
