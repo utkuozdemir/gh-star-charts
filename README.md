@@ -9,6 +9,19 @@ GitHub restricted the stargazers API in mid-2026, which broke the hosted chart s
 - **Nothing third-party in the serving path.** The images are files in your repo, served by GitHub. If updates ever stop, you keep a stale chart that says so, never a broken image.
 - **Your repos stay clean.** All commits land in the instance repo. The repos being charted are never written to.
 
+## Live demo, dogfooded
+
+This is this repo's own chart, generated and kept current by this tool through the exact flow described below:
+
+<!-- markdownlint-disable no-inline-html -->
+<a href="https://github.com/utkuozdemir/gh-star-charts/stargazers">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/utkuozdemir/star-charts/main/charts/utkuozdemir/gh-star-charts/dark.svg" />
+    <img alt="Star history of utkuozdemir/gh-star-charts" src="https://raw.githubusercontent.com/utkuozdemir/star-charts/main/charts/utkuozdemir/gh-star-charts/light.svg" />
+  </picture>
+</a>
+<!-- markdownlint-enable no-inline-html -->
+
 ## Install
 
 ```sh
