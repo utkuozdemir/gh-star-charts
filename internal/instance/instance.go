@@ -72,10 +72,15 @@ func Clone(fullName, token string) (*Repo, error) {
 func (r *Repo) Close() { os.RemoveAll(r.Dir) }
 
 // git runs git with the auth header passed per invocation, so the token never
-// lands in any config file.
+// lands in any config file. Signing is forced off: these are bot commits in a
+// temp clone, and an inherited signing config would stall on hardware keys.
 func (r *Repo) git(args ...string) (string, error) {
 	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + r.token))
-	full := append([]string{"-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + basic}, args...)
+	full := append([]string{
+		"-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + basic,
+		"-c", "commit.gpgsign=false",
+		"-c", "tag.gpgsign=false",
+	}, args...)
 
 	cmd := exec.Command("git", full...)
 	cmd.Env = append(os.Environ(),
