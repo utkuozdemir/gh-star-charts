@@ -175,9 +175,11 @@ func SVG(d *chartdata.Data, th Theme) string {
 		marginL, height-marginB, width-marginR, height-marginB, th.Axis)
 
 	// Area fill and line, the only elements wearing the series color.
-	line := make([]string, 0, len(pts))
-	for _, p := range pts {
-		line = append(line, fmt.Sprintf("%.1f,%.1f", xOf(dayNum(p.Date)), yOf(p.Stars)))
+	lineXs, lineYs := downsample(xs, ys, polylineBudget)
+
+	line := make([]string, 0, len(lineXs))
+	for i := range lineXs {
+		line = append(line, fmt.Sprintf("%.1f,%.1f", lineXs[i], lineYs[i]))
 	}
 
 	area := fmt.Sprintf("%.1f,%d %s %.1f,%d", xs[0], height-marginB, strings.Join(line, " "), xs[len(xs)-1], height-marginB)

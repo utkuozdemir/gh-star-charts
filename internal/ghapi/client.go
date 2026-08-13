@@ -33,13 +33,13 @@ type Repo struct {
 	FullName        string `json:"full_name"`
 	Private         bool   `json:"private"`
 	StargazersCount int    `json:"stargazers_count"`
-	DefaultBranch   string `json:"default_branch"`
 }
 
 // Client is a token-holding GitHub API client. The token lives in memory only.
 type Client struct {
-	token string
-	http  *http.Client
+	token   string
+	http    *http.Client
+	baseURL string
 }
 
 // ErrNoAuth is returned when no usable token can be resolved.
@@ -72,18 +72,24 @@ func (e *StatusError) IsPermanent() bool {
 func New() (*Client, error) {
 	for _, env := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
 		if t := strings.TrimSpace(os.Getenv(env)); t != "" {
-			return &Client{token: t, http: &http.Client{Timeout: 30 * time.Second}}, nil
+			return &Client{token: t, http: &http.Client{Timeout: 30 * time.Second}, baseURL: apiRoot}, nil
 		}
 	}
 
-	out, err := exec.Command("gh", "auth", "token").Output()
+	out, err := exec.Command("gh", "auth", "token", "--hostname", "github.com").Output()
 	if err == nil {
 		if t := strings.TrimSpace(string(out)); t != "" {
-			return &Client{token: t, http: &http.Client{Timeout: 30 * time.Second}}, nil
+			return &Client{token: t, http: &http.Client{Timeout: 30 * time.Second}, baseURL: apiRoot}, nil
 		}
 	}
 
 	return nil, ErrNoAuth
+}
+
+// NewWithBaseURL builds a client against an arbitrary API root, which is what
+// lets tests run against a local fake server.
+func NewWithBaseURL(baseURL, token string) *Client {
+	return &Client{token: token, http: &http.Client{Timeout: 30 * time.Second}, baseURL: baseURL}
 }
 
 // Token exposes the resolved token for git transport auth. It is never logged
@@ -91,7 +97,7 @@ func New() (*Client, error) {
 func (c *Client) Token() string { return c.token }
 
 func (c *Client) do(method, path string, accept string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequest(method, apiRoot+path, body)
+	req, err := http.NewRequest(method, c.baseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -165,15 +171,13 @@ func (c *Client) AuthenticatedLogin() (string, error) {
 	return u.Login, nil
 }
 
-// AuthenticatedHost reports the gh CLI's active host, used to reject GHES.
+// AuthenticatedHost reports which host the tool will talk to. The token is
+// always resolved for github.com specifically, so a GHES login being active
+// cannot leak a GHES token to api.github.com; the only rejectable state is an
+// explicit GH_HOST override.
 func AuthenticatedHost() string {
 	if h := strings.TrimSpace(os.Getenv("GH_HOST")); h != "" {
 		return h
-	}
-
-	out, err := exec.Command("gh", "auth", "status", "--active", "--hostname", "github.com").CombinedOutput()
-	if err != nil && len(out) > 0 && strings.Contains(string(out), "not logged in") {
-		return "unknown"
 	}
 
 	return "github.com"
@@ -194,7 +198,9 @@ func (c *Client) Backfill(fullName string, totalStars int) (*BackfillResult, err
 
 	for page := 1; ; page++ {
 		if page > PageCap {
-			res.Truncated = true
+			// The cap only truncates when stars actually remain beyond it: a
+			// repo of exactly PageCap*100 stars is complete, not truncated.
+			res.Truncated = len(res.StarredAt) < totalStars
 
 			return res, nil
 		}

@@ -7,14 +7,17 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-// SchemaVersion is the current manifest schema.
-const SchemaVersion = 1
+// SchemaVersion is the current manifest schema. Version 2 added the style,
+// cron, and failure-tracking fields: binaries that only know version 1 must
+// refuse the file rather than silently drop what they do not understand.
+const SchemaVersion = 2
 
 // FileName is the manifest's fixed location in the instance repo root.
 const FileName = "star-charts.yaml"
@@ -48,10 +51,8 @@ type Entry struct {
 // validated defaults. A single value applies to both modes unless the dark
 // variant is set.
 type Style struct {
-	LineColor      string `yaml:"lineColor,omitempty"`
-	LineColorDark  string `yaml:"lineColorDark,omitempty"`
-	Background     string `yaml:"background,omitempty"`
-	BackgroundDark string `yaml:"backgroundDark,omitempty"`
+	LineColor     string `yaml:"lineColor,omitempty"`
+	LineColorDark string `yaml:"lineColorDark,omitempty"`
 	// Look selects the chart style: empty or "sketchy" is the classic
 	// hand-drawn default, "clean" is the plain alternative.
 	Look string `yaml:"look,omitempty"`
@@ -64,10 +65,8 @@ func (s Style) IsZero() bool {
 
 // Manifest is the file's root.
 type Manifest struct {
-	SchemaVersion int `yaml:"schemaVersion"`
-	// Cron overrides the update schedule; empty means the default daily run.
-	Cron   string  `yaml:"cron,omitempty"`
-	Charts []Entry `yaml:"charts"`
+	SchemaVersion int     `yaml:"schemaVersion"`
+	Charts        []Entry `yaml:"charts"`
 }
 
 // AutoPauseThreshold is how many consecutive permanent-shape failures flip an
@@ -100,22 +99,52 @@ func Load(path string) (*Manifest, error) {
 	for i := range m.Charts {
 		e := &m.Charts[i]
 		if e.Repo == "" || e.Path == "" || e.RepoID == 0 {
-			return nil, fmt.Errorf("%s: entry %d is missing repoId, repo, or path; entries are managed by the extension, hand edits should only pause, unpause, or remove", path, i)
+			return nil, fmt.Errorf("%s: entry %d is missing repoId, repo, or path. Entries are managed by the extension, hand edits should only pause, unpause, or remove entries", path, i)
 		}
 
 		if e.State != StateActive && e.State != StatePaused {
 			return nil, fmt.Errorf("%s: entry %q has unknown state %q", path, e.Repo, e.State)
+		}
+
+		if err := ValidateChartPath(e.Path); err != nil {
+			return nil, fmt.Errorf("%s: entry %q: %w", path, e.Repo, err)
 		}
 	}
 
 	return &m, nil
 }
 
-// Save writes the manifest deterministically.
+// chartPathRe constrains every chart path segment to a safe character set.
+var chartPathRe = regexp.MustCompile(`^[a-z0-9._-]+$`)
+
+// ValidateChartPath enforces that a chart directory stays strictly inside
+// charts/ in the instance repo. Both CLI input and loaded manifests go
+// through it: a hostile or corrupted path must never reach a filesystem
+// write, and especially not a recursive delete.
+func ValidateChartPath(p string) error {
+	segments := strings.Split(p, "/")
+	if len(segments) < 2 || segments[0] != "charts" {
+		return fmt.Errorf("chart path %q must live under charts/", p)
+	}
+
+	for _, seg := range segments[1:] {
+		if seg == "." || seg == ".." || !chartPathRe.MatchString(seg) {
+			return fmt.Errorf("chart path %q contains an invalid segment %q", p, seg)
+		}
+	}
+
+	return nil
+}
+
+// Save writes the manifest deterministically, migrating older schemas
+// forward: every field change so far is additive, so migration is just
+// stamping the current version.
 func (m *Manifest) Save(path string) error {
 	if m.SchemaVersion > SchemaVersion {
 		return ErrNewerSchema
 	}
+
+	m.SchemaVersion = SchemaVersion
 
 	sort.Slice(m.Charts, func(i, j int) bool { return m.Charts[i].Repo < m.Charts[j].Repo })
 

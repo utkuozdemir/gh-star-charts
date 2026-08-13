@@ -134,11 +134,17 @@ func BuildPrefix(starredAt []time.Time) []Point {
 
 // Observe records an authoritative sampled total for the given UTC day,
 // replacing an existing same-day point (last observation wins) and advancing
-// LastChecked. It never touches any other point.
-func (d *Data) Observe(day time.Time, stars int) {
+// LastChecked. It never touches any other point, and it refuses observations
+// dated before what was already observed: a machine with a wrong clock must
+// not overwrite reconstructed history or reclassify it as observed.
+func (d *Data) Observe(day time.Time, stars int) error {
 	date := day.UTC().Format(DateFormat)
 
-	if d.ObservedSince == "" || date < d.ObservedSince {
+	if d.LastChecked != "" && date < d.LastChecked {
+		return fmt.Errorf("observation date %s is before the last observation %s, refusing (clock skew?)", date, d.LastChecked)
+	}
+
+	if d.ObservedSince == "" {
 		d.ObservedSince = date
 	}
 
@@ -150,12 +156,14 @@ func (d *Data) Observe(day time.Time, stars int) {
 		if d.Points[i].Date == date {
 			d.Points[i].Stars = stars
 
-			return
+			return nil
 		}
 	}
 
 	d.Points = append(d.Points, Point{Date: date, Stars: stars})
 	sort.Slice(d.Points, func(i, j int) bool { return d.Points[i].Date < d.Points[j].Date })
+
+	return nil
 }
 
 // SetPrefix installs a reconstructed prefix. It fails if observed points exist
@@ -172,7 +180,7 @@ func (d *Data) SetPrefix(points []Point) error {
 
 	for _, p := range d.Points {
 		if d.ObservedSince == "" || p.Date < d.ObservedSince {
-			return errors.New("a reconstructed prefix already exists; use reset to rebuild it")
+			return errors.New("a reconstructed prefix already exists, use reset to rebuild it")
 		}
 	}
 

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/utkuozdemir/gh-star-charts/internal/chartdata"
@@ -17,9 +16,10 @@ import (
 
 // cmdUpdate is the CI entry point. It owns the complete transaction: clone,
 // refresh every active chart, commit, push, and report the aggregate status.
-// Successes are published even when other entries fail; the run exits non-zero
-// only for transient errors, while permanent-shape failures count toward
-// auto-pause instead of staying loud forever.
+// Successes are published even when other entries fail, and any failure makes
+// the run exit non-zero so it stays visible. Permanent-shape failures
+// additionally count toward auto-pause, so a deleted repo goes quiet after a
+// few loud runs instead of staying red forever.
 func cmdUpdate(args []string) int {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	inst := fs.String("instance", "", "instance repo (owner/name)")
@@ -44,19 +44,15 @@ func cmdUpdate(args []string) int {
 		}
 	}
 
-	var transientFailures []string
+	failed := 0
 
 	err = instance.Transact(target, c.Token(), func(r *instance.Repo) error {
-		transientFailures = nil
+		failed = 0
 
-		mPath := filepath.Join(r.Dir, manifest.FileName)
-
-		m, err := manifest.Load(mPath)
+		m, mPath, err := requireInstance(r)
 		if err != nil {
 			return err
 		}
-
-		succeeded := 0
 
 		for i := range m.Charts {
 			e := &m.Charts[i]
@@ -65,9 +61,9 @@ func cmdUpdate(args []string) int {
 			}
 
 			if err := refreshOne(c, r, e); err != nil {
-				var se *ghapi.StatusError
+				failed++
 
-				if errors.As(err, &se) && se.IsPermanent() {
+				if isPermanentFailure(err) {
 					e.ConsecutiveFailures++
 					fmt.Fprintf(os.Stderr, "%s: permanent-looking failure %d/%d: %v\n", e.Repo, e.ConsecutiveFailures, manifest.AutoPauseThreshold, err)
 
@@ -75,25 +71,18 @@ func cmdUpdate(args []string) int {
 						e.State = manifest.StatePaused
 						e.Note = fmt.Sprintf("auto-paused on %s: %v", time.Now().UTC().Format(chartdata.DateFormat), err)
 
-						fmt.Fprintf(os.Stderr, "%s: auto-paused; unpause by re-running `gh star-charts add %s`\n", e.Repo, e.Repo)
+						fmt.Fprintf(os.Stderr, "%s: auto-paused. Recover by re-running `gh star-charts add %s`\n", e.Repo, e.Repo)
 					}
 				} else {
-					transientFailures = append(transientFailures, fmt.Sprintf("%s: %v", e.Repo, err))
 					fmt.Fprintf(os.Stderr, "%s: transient failure: %v\n", e.Repo, err)
 				}
-
-				continue
+			} else {
+				e.ConsecutiveFailures = 0
 			}
-
-			e.ConsecutiveFailures = 0
-			succeeded++
 		}
 
-		if succeeded == 0 && len(transientFailures) > 0 {
-			// An all-failed run publishes nothing.
-			return errors.New("every active chart failed; pushing nothing")
-		}
-
+		// Failure bookkeeping (counters, auto-pause) must land even on a bad
+		// day, or a permanently broken entry could stay loud forever.
 		if err := m.Save(mPath); err != nil {
 			return err
 		}
@@ -101,8 +90,6 @@ func cmdUpdate(args []string) int {
 		if err := instance.WriteReadme(r, m, Version); err != nil {
 			return err
 		}
-
-		maybeNoteNewerRelease(c)
 
 		_, err = r.CommitPush("chore: update star charts", ".")
 
@@ -114,8 +101,8 @@ func cmdUpdate(args []string) int {
 		return 1
 	}
 
-	if len(transientFailures) > 0 {
-		fmt.Fprintf(os.Stderr, "completed with %d transient failure(s):\n  %s\n", len(transientFailures), strings.Join(transientFailures, "\n  "))
+	if failed > 0 {
+		fmt.Fprintf(os.Stderr, "completed with %d failed chart(s), see above\n", failed)
 
 		return 1
 	}
@@ -123,6 +110,18 @@ func cmdUpdate(args []string) int {
 	fmt.Println("all charts updated")
 
 	return 0
+}
+
+// isPermanentFailure classifies errors that retrying cannot fix: the repo is
+// gone or out of reach, its identity changed, its data file is missing, or it
+// was written by a newer binary than the one running.
+func isPermanentFailure(err error) bool {
+	var se *ghapi.StatusError
+	if errors.As(err, &se) {
+		return se.IsPermanent()
+	}
+
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, chartdata.ErrNewerSchema) || errors.Is(err, manifest.ErrNewerSchema)
 }
 
 // refreshOne fetches current metadata for one entry, verifies identity, and
@@ -148,36 +147,26 @@ func refreshOne(c *ghapi.Client, r *instance.Repo, e *manifest.Entry) error {
 	// stays frozen, URLs are forever.
 	e.Repo = meta.FullName
 
-	dataPath := filepath.Join(r.Dir, e.Path, "data.json")
-
-	d, err := chartdata.Load(dataPath)
+	chartDir, err := r.ChartDir(e.Path)
 	if err != nil {
 		return err
 	}
 
+	d, err := chartdata.Load(filepath.Join(chartDir, "data.json"))
+	if err != nil {
+		return err
+	}
+
+	if d.RepoID != 0 && d.RepoID != e.RepoID {
+		return fmt.Errorf("data file at %s belongs to repo id %d, expected %d, refusing to mix histories", e.Path, d.RepoID, e.RepoID)
+	}
+
+	d.RepoID = e.RepoID
 	d.Repo = meta.FullName
-	d.Observe(time.Now().UTC(), meta.StargazersCount)
 
-	return writeChart(r.Dir, e.Path, d, e.Style)
-}
-
-// maybeNoteNewerRelease surfaces available upgrades: notification, never
-// authority. Failures of this check are ignored.
-func maybeNoteNewerRelease(c *ghapi.Client) {
-	latest := c.LatestReleaseTag(instance.ProductRepo)
-	if latest == "" || Version == "dev" || latest == Version {
-		return
+	if err := d.Observe(time.Now().UTC(), meta.StargazersCount); err != nil {
+		return err
 	}
 
-	note := fmt.Sprintf("gh-star-charts %s is available (this instance runs %s): upgrade with `gh extension upgrade star-charts && gh star-charts init`", latest, Version)
-
-	fmt.Fprintln(os.Stderr, "note: "+note)
-
-	if summary := os.Getenv("GITHUB_STEP_SUMMARY"); summary != "" {
-		f, err := os.OpenFile(summary, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err == nil {
-			fmt.Fprintln(f, note)
-			f.Close()
-		}
-	}
+	return writeChart(chartDir, d, e.Style)
 }

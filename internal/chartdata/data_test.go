@@ -140,3 +140,19 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 		t.Fatalf("roundtrip mismatch: %+v", got)
 	}
 }
+
+func TestObserveRefusesBackwardClock(t *testing.T) {
+	d := &chartdata.Data{SchemaVersion: chartdata.SchemaVersion}
+
+	if err := d.Observe(day("2026-08-13"), 100); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Observe(day("2023-01-01"), 5); err == nil {
+		t.Fatal("an observation dated before the last one must be refused")
+	}
+
+	if len(d.Points) != 1 || d.ObservedSince != "2026-08-13" {
+		t.Fatalf("refused observation must change nothing: %+v", d)
+	}
+}

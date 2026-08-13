@@ -52,16 +52,21 @@ func sketchSVG(d *chartdata.Data, th Theme) string {
 
 	rnd := newRNG(d.Repo + "/" + th.Name)
 
-	// Legend chip: wobbly rounded border, square marker, repo name.
-	legendW := 30 + 9*len(d.Repo)
-	if legendW > w-left-right {
-		legendW = w - left - right
+	// Legend chip: wobbly rounded border, square marker, repo name. The name
+	// is capped at a fixed character budget and its glyphs are forced into
+	// the reserved width, so no viewer font choice can overflow the border.
+	name := d.Repo
+	if len(name) > 46 {
+		name = name[:45] + "\u2026"
 	}
+
+	textW := 9 * len([]rune(name))
+	legendW := 30 + textW
 
 	fmt.Fprintf(&b, `<rect x="%d" y="%d" width="%d" height="34" rx="8" fill="none" stroke="%s" stroke-width="2" transform="rotate(%.2f %d %d)"/>`+"\n",
 		left+8, top-26, legendW, th.Primary, 0.3*rnd.next(), left+8+legendW/2, top-26+17)
 	fmt.Fprintf(&b, `<rect x="%d" y="%d" width="11" height="11" rx="2" fill="%s"/>`+"\n", left+18, top-14, th.Line)
-	fmt.Fprintf(&b, `<text x="%d" y="%d" font-size="15" fill="%s">%s</text>`+"\n", left+36, top-3, th.Primary, esc(d.Repo))
+	fmt.Fprintf(&b, `<text x="%d" y="%d" font-size="15" fill="%s" textLength="%d" lengthAdjust="spacingAndGlyphs">%s</text>`+"\n", left+36, top-3, th.Primary, textW-9, esc(name))
 
 	x0, x1 := dayNum(pts[0].Date), dayNum(pts[len(pts)-1].Date)
 	if x1 == x0 {
@@ -114,8 +119,10 @@ func sketchSVG(d *chartdata.Data, th Theme) string {
 		ys[i] = yOf(p.Stars)
 	}
 
+	lineXs, lineYs := downsample(xs, ys, polylineBudget)
+
 	fmt.Fprintf(&b, `<path d="%s" fill="none" stroke="%s" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`+"\n",
-		wobblePath(xs, ys, 1.5, rnd), th.Line)
+		wobblePath(lineXs, lineYs, 1.5, rnd), th.Line)
 
 	for _, i := range markerIndices(len(pts), 26) {
 		fmt.Fprintf(&b, `<circle cx="%.1f" cy="%.1f" r="4" fill="%s"/>`+"\n", xs[i], ys[i], th.Line)
@@ -134,11 +141,14 @@ func sketchSVG(d *chartdata.Data, th Theme) string {
 
 // kFormat renders counts the way the original chart did: 500, 1.0k, 2.5k.
 func kFormat(v int) string {
-	if v < 1000 {
+	switch {
+	case v < 1000:
 		return fmt.Sprintf("%d", v)
+	case v < 1000000:
+		return fmt.Sprintf("%.1fk", float64(v)/1000)
+	default:
+		return fmt.Sprintf("%.1fm", float64(v)/1000000)
 	}
-
-	return fmt.Sprintf("%.1fk", float64(v)/1000)
 }
 
 type rng struct{ state uint64 }
@@ -195,12 +205,15 @@ func wobblePath(xs, ys []float64, amp float64, r *rng) string {
 		steps := int(length/22) + 1
 		for s := 1; s <= steps; s++ {
 			t := float64(s) / float64(steps)
-			px, py := x0+dx*t, y0+dy*t
+			// The explicit conversions force intermediate rounding, which
+			// keeps amd64 and arm64 from fusing multiply-adds differently
+			// and producing byte-different output for identical data.
+			px, py := float64(x0+float64(dx*t)), float64(y0+float64(dy*t))
 
 			if s < steps {
 				o := amp * r.next()
-				px += nx * o
-				py += ny * o
+				px = float64(px + float64(nx*o))
+				py = float64(py + float64(ny*o))
 			}
 
 			fmt.Fprintf(&b, " L %.1f,%.1f", px, py)
@@ -208,6 +221,62 @@ func wobblePath(xs, ys []float64, amp float64, r *rng) string {
 	}
 
 	return b.String()
+}
+
+// polylineBudget bounds the number of points the drawn line uses, so a chart
+// file stays constant-size no matter how many years of daily points the data
+// file accumulates.
+const polylineBudget = 320
+
+// downsample reduces parallel coordinate slices to the budget, keeping the
+// first point, the last point, and the extremum of each bucket so a one-day
+// dip cannot vanish from the drawn line.
+func downsample(xs, ys []float64, budget int) ([]float64, []float64) {
+	n := len(xs)
+	if n <= budget {
+		return xs, ys
+	}
+
+	outX := []float64{xs[0]}
+	outY := []float64{ys[0]}
+
+	buckets := budget - 2
+	for bkt := 0; bkt < buckets; bkt++ {
+		lo := 1 + bkt*(n-2)/buckets
+		hi := 1 + (bkt+1)*(n-2)/buckets
+
+		if lo >= hi {
+			continue
+		}
+
+		// Keep the point that deviates most from the straight line between
+		// the bucket's neighbors, so a dip or spike survives sampling.
+		x0, y0 := outX[len(outX)-1], outY[len(outY)-1]
+		x1, y1 := xs[hi-1], ys[hi-1]
+
+		pick, best := lo, -1.0
+
+		for i := lo; i < hi; i++ {
+			var expected float64
+			if x1 == x0 {
+				expected = y0
+			} else {
+				expected = y0 + (y1-y0)*(xs[i]-x0)/(x1-x0)
+			}
+
+			if dev := math.Abs(ys[i] - expected); dev > best {
+				pick, best = i, dev
+			}
+		}
+
+		outX = append(outX, xs[pick])
+		outY = append(outY, ys[pick])
+	}
+
+	outX = append(outX, xs[n-1])
+	outY = append(outY, ys[n-1])
+
+	return outX, outY
 }
 
 // markerIndices picks up to budget evenly spaced point indices, always
