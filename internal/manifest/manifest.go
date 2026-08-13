@@ -61,8 +61,10 @@ func (s Style) IsZero() bool {
 
 // Manifest is the file's root.
 type Manifest struct {
-	SchemaVersion int     `yaml:"schemaVersion"`
-	Charts        []Entry `yaml:"charts"`
+	SchemaVersion int `yaml:"schemaVersion"`
+	// Cron overrides the update schedule; empty means the default daily run.
+	Cron   string  `yaml:"cron,omitempty"`
+	Charts []Entry `yaml:"charts"`
 }
 
 // AutoPauseThreshold is how many consecutive permanent-shape failures flip an

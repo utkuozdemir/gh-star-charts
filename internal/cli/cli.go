@@ -112,6 +112,7 @@ func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	chartsRepo := fs.String("charts-repo", "", "instance repo (name or owner/name), default <login>/star-charts")
 	pinVersion := fs.String("pin-version", "", "release version to pin in the workflow (default: this binary's version)")
+	cron := fs.String("cron", "", "update schedule as a cron expression (default daily; stored, so later repairs keep it)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -161,6 +162,14 @@ func cmdInit(args []string) error {
 			return err
 		}
 
+		if *cron != "" {
+			if !cronRe.MatchString(*cron) {
+				return fmt.Errorf("invalid cron expression %q", *cron)
+			}
+
+			m.Cron = *cron
+		}
+
 		if err := m.Save(filepath.Join(r.Dir, manifest.FileName)); err != nil {
 			return err
 		}
@@ -170,7 +179,7 @@ func cmdInit(args []string) error {
 			return err
 		}
 
-		if err := os.WriteFile(filepath.Join(wfDir, instance.WorkflowFile), []byte(instance.WorkflowYAML(version, sum)), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(wfDir, instance.WorkflowFile), []byte(instance.WorkflowYAML(version, sum, m.Cron)), 0o644); err != nil {
 			return err
 		}
 
@@ -446,6 +455,10 @@ func describeAccessError(err error) error {
 // colorRe loosely accepts CSS color values while keeping SVG attribute
 // injection impossible.
 var colorRe = regexp.MustCompile(`^[-#a-zA-Z0-9(),.% ]+$`)
+
+// cronRe loosely validates a five-field cron expression and keeps YAML
+// injection out of the generated workflow.
+var cronRe = regexp.MustCompile(`^[0-9*,/ -]+$`)
 
 func validStyle(s manifest.Style) error {
 	for _, v := range []string{s.LineColor, s.LineColorDark, s.Background, s.BackgroundDark} {
