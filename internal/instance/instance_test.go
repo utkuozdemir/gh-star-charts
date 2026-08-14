@@ -11,12 +11,13 @@ import (
 )
 
 func TestWorkflowYAML(t *testing.T) {
-	wf := instance.WorkflowYAML("v1.2.3", strings.Repeat("a", 64))
+	wf := instance.WorkflowYAML("v1.2.3", strings.Repeat("a", 64), instance.DefaultCron)
 
 	for _, want := range []string{
 		"permissions:\n  contents: write",
 		"workflow_dispatch:",
 		"schedule:",
+		`cron: "43 4 * * *"`,
 		"releases/download/v1.2.3/gh-star-charts_v1.2.3_linux-amd64",
 		strings.Repeat("a", 64) + "  /tmp/gh-star-charts",
 		"sha256sum -c -",
@@ -33,6 +34,48 @@ func TestWorkflowYAML(t *testing.T) {
 
 	if strings.Contains(wf, "checkout") {
 		t.Error("the workflow must not check out: update owns its own clone")
+	}
+
+	custom := instance.WorkflowYAML("v1.2.3", strings.Repeat("a", 64), "7 21 * * *")
+	if !strings.Contains(custom, `cron: "7 21 * * *"`) {
+		t.Error("a custom daily schedule must be rendered")
+	}
+}
+
+func TestPreservedCron(t *testing.T) {
+	wf := func(cron string) string {
+		return instance.WorkflowYAML("v1.2.3", strings.Repeat("a", 64), cron)
+	}
+
+	// The round trip: whatever WorkflowYAML wrote is preserved verbatim.
+	for _, cron := range []string{"43 4 * * *", "0 0 * * *", "59 23 * * *"} {
+		got, ok := instance.PreservedCron(wf(cron))
+		if !ok || got != cron {
+			t.Errorf("cron %q must round-trip, got %q ok=%v", cron, got, ok)
+		}
+	}
+
+	// A hand edit with leading zeros is kept, canonicalized.
+	if got, ok := instance.PreservedCron(wf("05 04 * * *")); !ok || got != "5 4 * * *" {
+		t.Errorf("leading zeros must canonicalize, got %q ok=%v", got, ok)
+	}
+
+	// Everything else falls back to the default: non-daily cadences, invalid
+	// field values, broken syntax, more than one schedule line, no file.
+	for _, bad := range []string{
+		wf("*/5 * * * *"),
+		wf("0 4 * * 1"),
+		wf("60 4 * * *"),
+		wf("43 24 * * *"),
+		wf("43 4 * *"),
+		wf(`43 4 * * *"
+    - cron: "1 2 * * *`),
+		"name: something-else\n",
+		"",
+	} {
+		if got, ok := instance.PreservedCron(bad); ok {
+			t.Errorf("input must not be preservable, got %q:\n%s", got, bad)
+		}
 	}
 }
 
@@ -81,6 +124,39 @@ func TestWriteReadmeMarkerAtEOFWithoutNewline(t *testing.T) {
 	m := &manifest.Manifest{SchemaVersion: manifest.SchemaVersion}
 	if err := instance.WriteReadme(r, m, "v1.0.0"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWriteReadmePausedComesFirst(t *testing.T) {
+	r := fakeRepo(t)
+
+	m := &manifest.Manifest{SchemaVersion: manifest.SchemaVersion, Charts: []manifest.Entry{
+		{RepoID: 1, Repo: "owner/active", Path: "charts/owner/active", State: manifest.StateActive},
+		{RepoID: 2, Repo: "owner/dead", Path: "charts/owner/dead", State: manifest.StatePaused, Note: "auto-paused on 2026-08-14: repo gone"},
+	}}
+
+	if err := instance.WriteReadme(r, m, "v1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, _ := os.ReadFile(filepath.Join(r.Dir, "README.md"))
+	content := string(raw)
+
+	// The paused section is the durable warning (workflow runs go green again
+	// after an auto-pause), so it must sit above the chart gallery.
+	iPaused := strings.Index(content, "## No longer updated")
+	iActive := strings.Index(content, "## owner/active")
+
+	if iPaused < 0 || iActive < 0 || iPaused > iActive {
+		t.Fatalf("paused section must come before active charts:\n%s", content)
+	}
+
+	if !strings.Contains(content, "gh star-charts add owner/repo") {
+		t.Error("the paused section must say how to resume a chart")
+	}
+
+	if !strings.Contains(content, "auto-paused on 2026-08-14: repo gone") {
+		t.Error("the pause reason must be rendered")
 	}
 }
 

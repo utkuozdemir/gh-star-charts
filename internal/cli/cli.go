@@ -27,7 +27,7 @@ var Version = "dev"
 // Run dispatches the subcommand and returns the process exit code.
 func Run(args []string) int {
 	if len(args) < 1 {
-		usage()
+		usage(os.Stderr)
 
 		return 2
 	}
@@ -45,16 +45,28 @@ func Run(args []string) int {
 		err = cmdRemove(rest)
 	case "reset":
 		err = cmdReset(rest)
+	case "list":
+		err = cmdList(rest)
 	case "update":
 		return cmdUpdate(rest)
 	case "version", "--version", "-v":
 		fmt.Println(Version)
 
 		return 0
+	case "help", "--help", "-h":
+		usage(os.Stdout)
+
+		return 0
 	default:
-		usage()
+		usage(os.Stderr)
 
 		return 2
+	}
+
+	// Asking for help is a successful operation, not an error: the flag
+	// package has already printed the subcommand's usage.
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
 	}
 
 	if err != nil {
@@ -66,21 +78,24 @@ func Run(args []string) int {
 	return 0
 }
 
-func usage() {
-	fmt.Fprintln(os.Stderr, `usage: gh star-charts <init|add|remove|reset|update|version> [args]
+func usage(w io.Writer) {
+	fmt.Fprintln(w, `usage: gh star-charts <init|add|remove|reset|list|update|version|help> [args]
 
   init [owner/repo ...]      create or repair the instance repo, then add
   add owner/repo [...]       track repos: backfill, render, publish
   remove [--purge] owner/repo [...]
                              pause a chart (default keeps its files and URLs)
   reset owner/repo           destructive re-backfill, replaces observed history
+  list                       show every tracked chart and its state, read-only
   update --instance owner/repo
-                             CI entry point: refresh every active chart`)
+                             CI entry point: refresh every active chart
+
+Run a subcommand with -h to see its flags.`)
 }
 
 // boolFlags names the flags that take no value, which argument normalization
 // needs to know.
-var boolFlags = map[string]bool{"purge": true, "yes": true}
+var boolFlags = map[string]bool{"purge": true, "yes": true, "h": true, "help": true}
 
 // normalizeArgs lets flags appear after positional arguments, the way the
 // docs show them, by partitioning the argument list before flag parsing.
@@ -173,10 +188,18 @@ func checkInstanceRepo(c *ghapi.Client, inst string) error {
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	chartsRepo := fs.String("charts-repo", "", "instance repo (name or owner/name), default <login>/star-charts")
-	pinVersion := fs.String("pin-version", "", "release version to pin in the workflow (default: this binary's version)")
+	pinVersion := fs.String("pin-version", "", "released version to pin in the workflow (dev builds only)")
 
 	if err := fs.Parse(normalizeArgs(args)); err != nil {
 		return err
+	}
+
+	// A released binary always pins its own version: any other pin would be
+	// replaced by the next add anyway (the workflow repair path exists to
+	// prevent version skew), so accepting one here would only pretend to work.
+	// Only a dev build, which has no release of its own, needs the override.
+	if *pinVersion != "" && Version != "dev" {
+		return fmt.Errorf("--pin-version is a dev-build escape hatch; a released binary (%s) always pins its own version", Version)
 	}
 
 	c, err := newClient()
@@ -262,8 +285,8 @@ func cmdInit(args []string) error {
 		fmt.Printf("note: could not (re-)enable the workflow yet: %v\n", err)
 	}
 
-	fmt.Printf("instance %s ready: extension %s, workflow pinned to %s\n", inst, Version, version)
-	fmt.Println("upgrades: gh extension upgrade star-charts && gh star-charts init")
+	fmt.Printf("instance ready: https://github.com/%s (extension %s, workflow pinned to %s)\n", inst, Version, version)
+	fmt.Println("upgrades: gh extension upgrade star-charts, then any init or add re-pins the workflow")
 
 	if fs.NArg() > 0 {
 		return addRepos(c, inst, fs.Args(), "", manifest.Style{}, "")
@@ -278,7 +301,23 @@ func writeWorkflow(r *instance.Repo, version, sum string) error {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(wfDir, instance.WorkflowFile), []byte(instance.WorkflowYAML(version, sum)), 0o644)
+	wfPath := filepath.Join(wfDir, instance.WorkflowFile)
+
+	// A hand-edited daily run time survives regeneration; the workflow file
+	// in the instance repo is the single place that setting lives. Only the
+	// exact daily form is kept, so an edit that changes the cadence or breaks
+	// the syntax is restored to the default instead of silently preserved.
+	cron := instance.DefaultCron
+
+	if existing, err := os.ReadFile(wfPath); err == nil {
+		if c, ok := instance.PreservedCron(string(existing)); ok {
+			cron = c
+		} else {
+			fmt.Printf("note: the workflow schedule is not a plain daily \"minute hour * * *\", restoring the default %q\n", instance.DefaultCron)
+		}
+	}
+
+	return os.WriteFile(wfPath, []byte(instance.WorkflowYAML(version, sum, cron)), 0o644)
 }
 
 // ensureWorkflowCurrent repairs the workflow pin when the running binary is a
@@ -435,6 +474,19 @@ func applyStyle(entry *manifest.Entry, flags manifest.Style) {
 	apply(&entry.Style.LineColorDark, flags.LineColorDark)
 }
 
+// backfillProgress reports on a long backfill: one line every ten API pages,
+// so a 40k-star repo shows steady movement instead of minutes of silence.
+// Small repos finish before the first line.
+func backfillProgress(total int) func(fetched int) {
+	const progressEvery = 1000 // stars, ten pages of a hundred
+
+	return func(fetched int) {
+		if fetched%progressEvery == 0 && fetched < total {
+			fmt.Printf("  %d / %d stars\n", fetched, total)
+		}
+	}
+}
+
 func addOne(c *ghapi.Client, inst, repoArg, pathOverride string, style manifest.Style, look string) error {
 	meta, err := c.GetRepo(repoArg)
 	if err != nil {
@@ -445,7 +497,7 @@ func addOne(c *ghapi.Client, inst, repoArg, pathOverride string, style manifest.
 		return fmt.Errorf("%s is private. The chart would publish its star counts, and the update workflow could not read them anyway, so only public repos are supported", meta.FullName)
 	}
 
-	var snippet string
+	var snippet, chartURL string
 
 	err = instance.Transact(inst, c.Token(), func(r *instance.Repo) error {
 		m, mPath, err := requireInstance(r)
@@ -533,7 +585,7 @@ func addOne(c *ghapi.Client, inst, repoArg, pathOverride string, style manifest.
 		if len(d.Points) == 0 {
 			fmt.Printf("backfilling %s (%d stars)\n", meta.FullName, meta.StargazersCount)
 
-			bf, err := c.Backfill(meta.FullName, meta.StargazersCount)
+			bf, err := c.Backfill(meta.FullName, meta.StargazersCount, backfillProgress(meta.StargazersCount))
 			if err != nil {
 				return describeAccessError(err)
 			}
@@ -567,6 +619,7 @@ func addOne(c *ghapi.Client, inst, repoArg, pathOverride string, style manifest.
 		// Save sorts the entries slice, so re-resolve by ID rather than
 		// trusting a pre-sort pointer.
 		snippet = instance.EmbedSnippet(r, *m.FindByID(meta.ID))
+		chartURL = instance.ChartURL(r, *m.FindByID(meta.ID), "light")
 
 		_, err = r.CommitPush(fmt.Sprintf("chore: add star chart for %s", meta.FullName), ".")
 
@@ -576,7 +629,7 @@ func addOne(c *ghapi.Client, inst, repoArg, pathOverride string, style manifest.
 		return err
 	}
 
-	fmt.Printf("\n%s is now tracked. Embed its chart with:\n\n%s\n\n", meta.FullName, snippet)
+	fmt.Printf("\n%s is now tracked. See the chart at %s\n\nEmbed it with:\n\n%s\n\n", meta.FullName, chartURL, snippet)
 
 	return nil
 }
@@ -815,7 +868,9 @@ func cmdReset(args []string) error {
 
 		entry.Repo = meta.FullName
 
-		bf, err := c.Backfill(meta.FullName, meta.StargazersCount)
+		fmt.Printf("rebuilding the history of %s (%d stars)\n", meta.FullName, meta.StargazersCount)
+
+		bf, err := c.Backfill(meta.FullName, meta.StargazersCount, backfillProgress(meta.StargazersCount))
 		if err != nil {
 			return describeAccessError(err)
 		}

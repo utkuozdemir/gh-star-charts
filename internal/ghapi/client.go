@@ -192,8 +192,10 @@ type BackfillResult struct {
 }
 
 // Backfill pages through the stargazer timestamps. The caller must hold
-// write access on the repo (GitHub's post-June-2026 restriction).
-func (c *Client) Backfill(fullName string, totalStars int) (*BackfillResult, error) {
+// write access on the repo (GitHub's post-June-2026 restriction). progress,
+// when non-nil, is called after every fetched page with the number of
+// timestamps collected so far, so the CLI can report on long backfills.
+func (c *Client) Backfill(fullName string, totalStars int, progress func(fetched int)) (*BackfillResult, error) {
 	res := &BackfillResult{}
 
 	for page := 1; ; page++ {
@@ -216,6 +218,10 @@ func (c *Client) Backfill(fullName string, totalStars int) (*BackfillResult, err
 
 		for _, s := range batch {
 			res.StarredAt = append(res.StarredAt, s.StarredAt)
+		}
+
+		if progress != nil {
+			progress(len(res.StarredAt))
 		}
 
 		if len(batch) < perPage {
@@ -263,17 +269,4 @@ func (c *Client) EnableWorkflow(instanceRepo, workflowFile string) error {
 	}
 
 	return resp.Body.Close()
-}
-
-// LatestReleaseTag returns the product repo's newest release tag, or "" when
-// the check fails (callers tolerate that: notification, not authority).
-func (c *Client) LatestReleaseTag(productRepo string) string {
-	var rel struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := c.getJSON("/repos/"+productRepo+"/releases/latest", "", &rel); err != nil {
-		return ""
-	}
-
-	return rel.TagName
 }

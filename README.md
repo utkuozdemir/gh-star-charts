@@ -23,7 +23,9 @@ Reading star timestamps requires write access on the repo since the API change. 
 
 After that first backfill, the current star count is public data. The daily workflow reads it without any credentials, appends a data point, re-renders the images, and pushes to its own repository using the ephemeral `GITHUB_TOKEN` with `contents: write` and nothing else. No new credential is created or stored anywhere, and nothing ever holds write access to the repos being charted. Setup uses the `gh` auth you already have, in memory only.
 
-The workflow the tool writes into your instance repo is self-contained and pins its binary with a SHA-256 checksum inlined into the file. This way, a moved tag or a swapped release asset cannot change what runs in your repository. Upgrades reach the workflow only when you run `gh extension upgrade star-charts && gh star-charts init` yourself.
+The workflow the tool writes into your instance repo is self-contained and pins its binary with a SHA-256 checksum inlined into the file. This way, a moved tag or a swapped release asset cannot change what runs in your repository. Upgrades reach the workflow only when you run `gh extension upgrade star-charts` yourself: after that, any `init` or `add` re-pins the workflow to the new version.
+
+The workflow runs daily at 04:43 UTC. To move the run time, edit the `cron:` line in the workflow file, and the edit survives regeneration. The daily cadence itself is fixed, because the data holds one point per UTC day, so only a plain `minute hour * * *` schedule is kept and anything else is restored to the default.
 
 If updates ever stop, you keep a chart that shows its last update date instead of a broken image.
 
@@ -52,10 +54,13 @@ This creates `<your-login>/star-charts`, backfills each repo, and prints a copy-
 
 The other commands:
 
-- `add owner/repo` tracks more repos. Re-running it on a tracked repo is a repair: it re-renders, picks up a rename, and updates the workflow pin.
+- `add owner/repo` tracks more repos. Re-running it on a tracked repo is a repair: it re-renders, picks up a rename, and updates the workflow pin. `--chart-path` places the chart files somewhere else under `charts/`, only needed when two tracked repos would collide on the default path.
+- `list` shows every tracked chart, its state, star count, and last update, read-only.
 - `remove owner/repo` pauses a chart. Its files and URLs keep serving the last state, so nothing embedded anywhere breaks. `--purge` deletes the files instead, and the URLs start returning 404.
-- `reset owner/repo` rebuilds a chart's history from scratch. This is destructive, because the daily observations collected so far (including unstar dips) cannot be fetched again, so it asks for confirmation.
+- `reset owner/repo` rebuilds a chart's history from scratch. This is destructive, because the daily observations collected so far (including unstar dips) cannot be fetched again, so it asks for confirmation. `--yes` skips the prompt.
 - `update` is the entry point the workflow runs. You normally never call it yourself.
+
+Every interactive command takes `--charts-repo` to target an instance repo other than the default `<login>/star-charts`, as a name or as `owner/name`. The tool keeps no local state, so pass it on every command when you use one. An organization-owned instance repo is never auto-created: create it by hand, then `init --charts-repo org/star-charts` adopts it.
 
 ## Styling
 

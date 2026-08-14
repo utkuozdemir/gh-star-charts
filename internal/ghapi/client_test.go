@@ -52,13 +52,20 @@ func TestBackfillComplete(t *testing.T) {
 
 	c := ghapi.NewWithBaseURL(srv.URL, "t")
 
-	res, err := c.Backfill("a/b", 250)
+	var reports []int
+
+	res, err := c.Backfill("a/b", 250, func(fetched int) { reports = append(reports, fetched) })
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if len(res.StarredAt) != 250 || res.Truncated {
 		t.Fatalf("got %d stars, truncated=%v", len(res.StarredAt), res.Truncated)
+	}
+
+	// Progress is reported after every page, cumulative.
+	if len(reports) != 3 || reports[0] != 100 || reports[1] != 200 || reports[2] != 250 {
+		t.Fatalf("progress reports wrong: %v", reports)
 	}
 }
 
@@ -70,7 +77,7 @@ func TestBackfillExactlyAtCapIsNotTruncated(t *testing.T) {
 
 	c := ghapi.NewWithBaseURL(srv.URL, "t")
 
-	res, err := c.Backfill("a/b", total)
+	res, err := c.Backfill("a/b", total, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +99,7 @@ func TestBackfillBeyondCapIsTruncated(t *testing.T) {
 
 	c := ghapi.NewWithBaseURL(srv.URL, "t")
 
-	res, err := c.Backfill("a/b", total)
+	res, err := c.Backfill("a/b", total, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -25,6 +25,10 @@ func cmdUpdate(args []string) int {
 	inst := fs.String("instance", "", "instance repo (owner/name)")
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+
 		return 2
 	}
 
