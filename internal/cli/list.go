@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,10 +18,10 @@ import (
 // or missing data file degrades that entry's row instead of failing the whole
 // listing, because the command is most useful when something is half-broken.
 func cmdList(args []string) error {
-	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	fs := newFlagSet("list", "list [flags]")
 	chartsRepo := fs.String("charts-repo", "", "instance repo, default <login>/star-charts")
 
-	if err := fs.Parse(normalizeArgs(args)); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -54,7 +53,7 @@ func cmdList(args []string) error {
 	fmt.Printf("instance: https://github.com/%s\n\n", inst)
 
 	if len(m.Charts) == 0 {
-		fmt.Println("no charts tracked yet. Track one with `gh star-charts add owner/repo`")
+		fmt.Printf("no charts tracked yet. Track one with `gh star-charts add owner/repo --charts-repo %s`\n", inst)
 
 		return nil
 	}
@@ -63,31 +62,53 @@ func cmdList(args []string) error {
 	fmt.Fprintln(w, "REPOSITORY\tSTATE\tSTARS\tLAST CHECKED\tDETAIL")
 
 	for _, e := range m.Charts {
-		stars, lastChecked := "-", "-"
-
-		if chartDir, err := r.ChartDir(e.Path); err == nil {
-			if d, err := chartdata.Load(filepath.Join(chartDir, "data.json")); err == nil {
-				if d.LastChecked != "" {
-					lastChecked = d.LastChecked
-				}
-
-				if len(d.Points) > 0 {
-					stars = strconv.Itoa(d.Points[len(d.Points)-1].Stars)
-				}
-			} else {
-				lastChecked = "data unreadable"
-			}
-		}
-
-		state, detail := e.State, e.Note
-
-		if e.State == manifest.StateActive && e.ConsecutiveFailures > 0 {
-			state = "failing"
-			detail = fmt.Sprintf("%d/%d failures before auto-pause", e.ConsecutiveFailures, manifest.AutoPauseThreshold)
-		}
+		state, stars, lastChecked, detail := listRow(r, e)
 
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.Repo, state, stars, lastChecked, detail)
 	}
 
 	return w.Flush()
+}
+
+// listRow derives one table row from a manifest entry and its chart files. A
+// broken data file degrades the whole row and says why in the detail column,
+// never showing values it cannot vouch for. In particular, a data file whose
+// pinned repo ID differs from the entry's is another repository's history, so
+// its numbers must not appear under this entry's name (the updater refuses
+// the same mismatch).
+func listRow(r *instance.Repo, e manifest.Entry) (state, stars, lastChecked, detail string) {
+	state, stars, lastChecked, detail = e.State, "-", "-", e.Note
+
+	var dataNote string
+
+	if chartDir, err := r.ChartDir(e.Path); err != nil {
+		dataNote = "invalid chart path"
+	} else if d, err := chartdata.Load(filepath.Join(chartDir, "data.json")); err != nil {
+		dataNote = "data file missing or unreadable"
+	} else if d.RepoID != 0 && d.RepoID != e.RepoID {
+		dataNote = fmt.Sprintf("data file belongs to repo id %d, expected %d", d.RepoID, e.RepoID)
+	} else {
+		if d.LastChecked != "" {
+			lastChecked = d.LastChecked
+		}
+
+		if len(d.Points) > 0 {
+			stars = strconv.Itoa(d.Points[len(d.Points)-1].Stars)
+		}
+	}
+
+	if e.State == manifest.StateActive && e.ConsecutiveFailures > 0 {
+		state = "failing"
+		detail = fmt.Sprintf("%d/%d failures before auto-pause", e.ConsecutiveFailures, manifest.AutoPauseThreshold)
+	}
+
+	if dataNote != "" {
+		if detail != "" {
+			detail += ", " + dataNote
+		} else {
+			detail = dataNote
+		}
+	}
+
+	return state, stars, lastChecked, detail
 }

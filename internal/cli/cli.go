@@ -54,6 +54,11 @@ func Run(args []string) int {
 
 		return 0
 	case "help", "--help", "-h":
+		// "help <subcommand>" shows that subcommand's help.
+		if cmd == "help" && len(rest) == 1 && rest[0] != "help" {
+			return Run([]string{rest[0], "-h"})
+		}
+
 		usage(os.Stdout)
 
 		return 0
@@ -96,6 +101,35 @@ Run a subcommand with -h to see its flags.`)
 // boolFlags names the flags that take no value, which argument normalization
 // needs to know.
 var boolFlags = map[string]bool{"purge": true, "yes": true, "h": true, "help": true}
+
+// newFlagSet builds a subcommand's flag set with a usage line that shows the
+// positional syntax, which the flag package's default output omits.
+func newFlagSet(name, synopsis string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "usage: gh star-charts %s\n", synopsis)
+		fs.PrintDefaults()
+	}
+
+	return fs
+}
+
+// parseFlags normalizes the arguments and parses them. When help was asked
+// for, the help text goes to stdout, so it can be piped; parse errors stay on
+// stderr.
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	norm := normalizeArgs(args)
+
+	for _, a := range norm {
+		if name := strings.TrimLeft(a, "-"); strings.HasPrefix(a, "-") && (name == "h" || name == "help") {
+			fs.SetOutput(os.Stdout)
+
+			break
+		}
+	}
+
+	return fs.Parse(norm)
+}
 
 // normalizeArgs lets flags appear after positional arguments, the way the
 // docs show them, by partitioning the argument list before flag parsing.
@@ -186,11 +220,11 @@ func checkInstanceRepo(c *ghapi.Client, inst string) error {
 }
 
 func cmdInit(args []string) error {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs := newFlagSet("init", "init [flags] [owner/repo ...]")
 	chartsRepo := fs.String("charts-repo", "", "instance repo (name or owner/name), default <login>/star-charts")
 	pinVersion := fs.String("pin-version", "", "released version to pin in the workflow (dev builds only)")
 
-	if err := fs.Parse(normalizeArgs(args)); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -397,7 +431,7 @@ func resolvePin(override string) (version, sha string, err error) {
 }
 
 func cmdAdd(args []string) error {
-	fs := flag.NewFlagSet("add", flag.ContinueOnError)
+	fs := newFlagSet("add", "add [flags] owner/repo [...]")
 	chartsRepo := fs.String("charts-repo", "", "instance repo, default <login>/star-charts")
 	chartPath := fs.String("chart-path", "", "override the chart directory (only for path collisions)")
 
@@ -407,7 +441,7 @@ func cmdAdd(args []string) error {
 	fs.StringVar(&style.LineColorDark, "line-color-dark", "", "line color for the dark chart")
 	look := fs.String("look", "", "chart style: sketchy (the classic hand-drawn default), clean, or default to clear")
 
-	if err := fs.Parse(normalizeArgs(args)); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -478,7 +512,9 @@ func applyStyle(entry *manifest.Entry, flags manifest.Style) {
 // so a 40k-star repo shows steady movement instead of minutes of silence.
 // Small repos finish before the first line.
 func backfillProgress(total int) func(fetched int) {
-	const progressEvery = 1000 // stars, ten pages of a hundred
+	// Derived from the page size, so the modulo keeps firing on full pages if
+	// the API client's pagination ever changes.
+	progressEvery := 10 * ghapi.PerPage
 
 	return func(fetched int) {
 		if fetched%progressEvery == 0 && fetched < total {
@@ -719,11 +755,11 @@ func writeChart(chartDir string, d *chartdata.Data, style manifest.Style) error 
 }
 
 func cmdRemove(args []string) error {
-	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
+	fs := newFlagSet("remove", "remove [--purge] owner/repo [...]")
 	chartsRepo := fs.String("charts-repo", "", "instance repo, default <login>/star-charts")
 	purge := fs.Bool("purge", false, "also delete the chart files; their URLs will 404")
 
-	if err := fs.Parse(normalizeArgs(args)); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -805,11 +841,11 @@ func cmdRemove(args []string) error {
 }
 
 func cmdReset(args []string) error {
-	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
+	fs := newFlagSet("reset", "reset [--yes] owner/repo")
 	chartsRepo := fs.String("charts-repo", "", "instance repo, default <login>/star-charts")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
 
-	if err := fs.Parse(normalizeArgs(args)); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 

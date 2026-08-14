@@ -24,7 +24,9 @@ const (
 	// pages past 400 (at 100 per page) are not served.
 	PageCap = 400
 
-	perPage = 100
+	// PerPage is the page size used for pagination. Exported because progress
+	// reporting cadence is derived from it.
+	PerPage = 100
 )
 
 // Repo is the subset of repository metadata the tool uses.
@@ -211,7 +213,7 @@ func (c *Client) Backfill(fullName string, totalStars int, progress func(fetched
 			StarredAt time.Time `json:"starred_at"`
 		}
 
-		path := fmt.Sprintf("/repos/%s/stargazers?per_page=%d&page=%d", fullName, perPage, page)
+		path := fmt.Sprintf("/repos/%s/stargazers?per_page=%d&page=%d", fullName, PerPage, page)
 		if err := c.getJSON(path, "application/vnd.github.star+json", &batch); err != nil {
 			return nil, fmt.Errorf("backfill page %d: %w", page, err)
 		}
@@ -220,11 +222,13 @@ func (c *Client) Backfill(fullName string, totalStars int, progress func(fetched
 			res.StarredAt = append(res.StarredAt, s.StarredAt)
 		}
 
-		if progress != nil {
+		// An empty terminal page reports nothing: it would repeat the previous
+		// cumulative count.
+		if progress != nil && len(batch) > 0 {
 			progress(len(res.StarredAt))
 		}
 
-		if len(batch) < perPage {
+		if len(batch) < PerPage {
 			return res, nil
 		}
 	}

@@ -21,10 +21,10 @@ import (
 // additionally count toward auto-pause, so a deleted repo goes quiet after a
 // few loud runs instead of staying red forever.
 func cmdUpdate(args []string) int {
-	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs := newFlagSet("update", "update --instance owner/repo")
 	inst := fs.String("instance", "", "instance repo (owner/name)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}

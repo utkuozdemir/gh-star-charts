@@ -18,6 +18,7 @@ func TestWorkflowYAML(t *testing.T) {
 		"workflow_dispatch:",
 		"schedule:",
 		`cron: "43 4 * * *"`,
+		`"gh star-charts init" or "gh star-charts add"`,
 		"releases/download/v1.2.3/gh-star-charts_v1.2.3_linux-amd64",
 		strings.Repeat("a", 64) + "  /tmp/gh-star-charts",
 		"sha256sum -c -",
@@ -151,8 +152,10 @@ func TestWriteReadmePausedComesFirst(t *testing.T) {
 		t.Fatalf("paused section must come before active charts:\n%s", content)
 	}
 
-	if !strings.Contains(content, "gh star-charts add owner/repo") {
-		t.Error("the paused section must say how to resume a chart")
+	// The resume command names the instance explicitly, so it stays correct
+	// for readers whose default instance is a different repository.
+	if !strings.Contains(content, "gh star-charts add owner/repo --charts-repo user/star-charts") {
+		t.Error("the paused section must say how to resume a chart, naming this instance")
 	}
 
 	if !strings.Contains(content, "auto-paused on 2026-08-14: repo gone") {
